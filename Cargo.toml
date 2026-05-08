@@ -1,0 +1,47 @@
+[package]
+name = "dev-stress"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+readme = "README.md"
+license = "Apache-2.0"
+
+authors = [
+    "James Gober <me@jamesgober.com>"
+]
+
+description = "High-load stress testing for Rust. Concurrency, volume, saturation. Part of the dev-* verification suite."
+
+keywords = [
+    "stress",
+    "load-testing",
+    "concurrency",
+    "verification",
+    "ai-tools"
+]
+
+categories = [
+    "development-tools",
+    "development-tools::testing",
+    "development-tools::profiling"
+]
+
+documentation = "https://docs.rs/dev-stress"
+repository = "https://github.com/jamesgober/dev-stress"
+homepage = "https://github.com/jamesgober/dev-stress"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+dev-report = { version = "0.1", path = "../dev-report" }
+
+[dev-dependencies]
+
+[features]
+default = []
+
+[profile.release]
+opt-level = 3
+lto = "thin"
