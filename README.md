@@ -200,8 +200,10 @@ and will not change.
 
 ## Minimum supported Rust version
 
-`1.75` — pinned in `Cargo.toml` via `rust-version` and verified by
-the MSRV job in CI.
+`1.85` — pinned in `Cargo.toml` via `rust-version` and verified by
+the MSRV job in CI. (Bumped from 1.75 to align with the suite's
+shared MSRV after sibling crates picked up dependencies that require
+`edition2024`.)
 
 ## License
 
