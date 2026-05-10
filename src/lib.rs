@@ -103,6 +103,8 @@ pub struct StressRun {
     iterations: usize,
     threads: usize,
     track_latency: Option<usize>, // None = off; Some(n) = sample 1/n iterations
+    /// Per-thread target ops/sec rate. None = unbounded (run as fast as possible).
+    target_ops_per_sec_per_thread: Option<f64>,
 }
 
 impl StressRun {
@@ -113,6 +115,7 @@ impl StressRun {
             iterations: 1_000,
             threads: 1,
             track_latency: None,
+            target_ops_per_sec_per_thread: None,
         }
     }
 
@@ -148,6 +151,36 @@ impl StressRun {
         self
     }
 
+    /// Cap the workload at approximately `total_rate` ops per second
+    /// (across all threads).
+    ///
+    /// Implemented as a per-thread sleep based on observed elapsed time
+    /// vs. ideal scheduling. Sleep precision varies by OS; for very
+    /// high target rates (e.g. > 10k ops/sec/thread) the actual rate
+    /// may be lower than the target due to sleep granularity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use dev_stress::StressRun;
+    ///
+    /// // Cap to ~1000 ops/sec total across 4 threads = 250 per thread.
+    /// let run = StressRun::new("rate-limited")
+    ///     .iterations(500)
+    ///     .threads(4)
+    ///     .target_ops_per_sec(1000.0);
+    /// assert_eq!(run.threads_planned(), 4);
+    /// ```
+    pub fn target_ops_per_sec(mut self, total_rate: f64) -> Self {
+        if total_rate <= 0.0 {
+            self.target_ops_per_sec_per_thread = None;
+        } else {
+            let per_thread = total_rate / (self.threads.max(1) as f64);
+            self.target_ops_per_sec_per_thread = Some(per_thread);
+        }
+        self
+    }
+
     /// The configured iteration count.
     pub fn iterations_planned(&self) -> usize {
         self.iterations
@@ -156,6 +189,11 @@ impl StressRun {
     /// The configured thread count.
     pub fn threads_planned(&self) -> usize {
         self.threads
+    }
+
+    /// The configured per-thread target rate, if any.
+    pub fn target_ops_per_sec_per_thread(&self) -> Option<f64> {
+        self.target_ops_per_sec_per_thread
     }
 
     /// Execute the run. Returns a result with timing statistics.
@@ -173,10 +211,20 @@ impl StressRun {
             let count = per_thread + if t < leftover { 1 } else { 0 };
             let w = workload.clone();
             let track = self.track_latency;
+            let target_rate = self.target_ops_per_sec_per_thread;
             handles.push(std::thread::spawn(move || {
                 let start = Instant::now();
                 let mut tracker = track.map(LatencyTracker::new);
+                // Inverse of the per-thread rate, in seconds per op.
+                let interval_s = target_rate.map(|r| 1.0 / r);
                 for i in 0..count {
+                    if let (Some(interval), idx) = (interval_s, i) {
+                        let target = start + Duration::from_secs_f64(interval * idx as f64);
+                        let now = Instant::now();
+                        if target > now {
+                            std::thread::sleep(target - now);
+                        }
+                    }
                     if let Some(t) = tracker.as_mut() {
                         t.record(i, || w.run_once());
                     } else {
@@ -690,5 +738,46 @@ mod tests {
         let r = run.execute(&Noop);
         assert_eq!(r.iterations, 7);
         assert_eq!(r.thread_times.len(), 3);
+    }
+
+    #[test]
+    fn target_ops_per_sec_divides_across_threads() {
+        let run = StressRun::new("x")
+            .iterations(100)
+            .threads(4)
+            .target_ops_per_sec(1000.0);
+        // 1000 ops/sec / 4 threads = 250 ops/sec/thread.
+        assert_eq!(run.target_ops_per_sec_per_thread(), Some(250.0));
+    }
+
+    #[test]
+    fn target_ops_per_sec_zero_or_negative_disables() {
+        let run = StressRun::new("x")
+            .iterations(10)
+            .threads(2)
+            .target_ops_per_sec(0.0);
+        assert_eq!(run.target_ops_per_sec_per_thread(), None);
+        let run = StressRun::new("x")
+            .iterations(10)
+            .threads(2)
+            .target_ops_per_sec(-5.0);
+        assert_eq!(run.target_ops_per_sec_per_thread(), None);
+    }
+
+    #[test]
+    fn rate_limited_run_takes_at_least_target_duration() {
+        // 50 ops at 100 ops/sec total -> at least 0.5 seconds (with one thread).
+        // Use a reasonable lower bound to avoid flakes; we just want to
+        // confirm the limiter actually slows things down.
+        let started = Instant::now();
+        let run = StressRun::new("x")
+            .iterations(50)
+            .threads(1)
+            .target_ops_per_sec(100.0);
+        let _ = run.execute(&Noop);
+        let elapsed = started.elapsed();
+        // Lower bound: 50/100 = 500ms; allow 50% slack for sleep granularity
+        // on slow CI runners. Concretely we just want > 100ms (prove it slept).
+        assert!(elapsed >= Duration::from_millis(100));
     }
 }

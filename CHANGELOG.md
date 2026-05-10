@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-05-10
+
+### Added
+
+- `StressRun::target_ops_per_sec(rate)` — cap workload at approximately `rate` operations per second across all threads. Implemented as deadline-based per-iteration sleep; precision varies by OS but reliably slows below the unbounded ceiling.
+- `StressRun::target_ops_per_sec_per_thread()` accessor returning the configured per-thread rate, if any.
+
+### Notes
+
+- Sleep granularity on different OSes means very high target rates (>10k ops/sec/thread) may not be achievable; the limiter never speeds the workload up, only slows it down.
+
+[0.9.2]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.2
+
 ## [0.9.1] - 2026-05-09
 
 ### Fixed
@@ -77,5 +90,5 @@
 Name-claim release. Real load patterns (latency percentiles per-op,
 soak tests, memory pressure) land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-stress/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-stress/compare/v0.9.2...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-stress/releases/tag/v0.1.0
