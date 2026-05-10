@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-09
+
+### Fixed
+
+- Broken intra-doc link `[`system`]` in the crate-level docstring would warn under `cargo doc` when the `system-stats` feature is disabled. The link is now a plain code span.
+
+[0.9.1]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.1
+
 ## [0.9.0] - 2026-05-08
 
 ### Added
@@ -69,5 +77,5 @@
 Name-claim release. Real load patterns (latency percentiles per-op,
 soak tests, memory pressure) land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-stress/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-stress/compare/v0.9.1...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-stress/releases/tag/v0.1.0

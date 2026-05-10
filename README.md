@@ -40,7 +40,7 @@ It does NOT do:
 
 ```toml
 [dependencies]
-dev-stress = "0.9"
+dev-stress = "0.9.1"
 ```
 
 ```rust
@@ -168,7 +168,7 @@ let report = producer.produce(); // dev_report::Report
 
 ```toml
 [dependencies]
-dev-stress = { version = "0.9", features = ["system-stats"] }
+dev-stress = { version = "0.9.1", features = ["system-stats"] }
 ```
 
 ```rust,ignore

@@ -40,7 +40,8 @@
 //! ## Features
 //!
 //! - `system-stats` (opt-in): measure peak RSS and CPU time via
-//!   `sysinfo`. See [`system`].
+//!   `sysinfo`. See the `system` module
+//!   (visible in rustdoc when the feature is enabled).
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
