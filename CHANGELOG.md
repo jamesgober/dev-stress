@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-05-12
+
+Documentation and SEO pass. No code changes.
+
+### Changed
+
+- README header standardized to match the collection-wide template: Rust logo image, MSRV badge between CI and docs.rs, copyright block at bottom.
+- Tagline rewritten to lead with the developer outcome (stress + soak workloads, latency percentiles, verdict at the end).
+- `## The dev-* collection` section added with the full 14-crate map.
+- `Cargo.toml` description rewritten: enumerates concurrent workloads, latency percentiles, throughput-collapse detection.
+- `Cargo.toml` keywords retuned: dropped `verification` and `ai-tools`, added `soak` and `latency` for crates.io search.
+
+### Added
+
+- "Part of the `dev-*` verification collection" block on the README, under the intro, linking the umbrella `dev-tools` crate.
+
+[0.9.4]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.4
+
 ## [0.9.3] - 2026-05-12
 
 ### Added
