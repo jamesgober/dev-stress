@@ -1,6 +1,6 @@
 [package]
 name = "dev-stress"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2021"
 rust-version = "1.85"
 readme = "README.md"
@@ -10,14 +10,14 @@ authors = [
     "James Gober <me@jamesgober.com>"
 ]
 
-description = "High-load stress testing for Rust. Concurrency, volume, saturation. Part of the dev-* verification suite."
+description = "High-load stress and soak testing for Rust. Concurrent workloads, latency percentiles, throughput collapse detection, sustained-pressure verdicts. Part of the dev-* verification collection."
 
 keywords = [
     "stress",
     "load-testing",
     "concurrency",
-    "verification",
-    "ai-tools"
+    "soak",
+    "latency"
 ]
 
 categories = [
