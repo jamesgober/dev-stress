@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-05-12
+
 ### Added
 
 - `examples/workload.rs` — runnable demonstration of the `Workload` trait + `StressRun::execute` flow on multiple OS threads, printing `ops_per_sec`, `total_elapsed`, and `thread_time_cv` from the resulting `StressResult`.
@@ -9,6 +11,8 @@
 ### Changed
 
 - CI: `actions/checkout` bumped from `v4` to `v5` (removes Node 20 deprecation warnings).
+
+[0.9.3]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.3
 
 ## [0.9.2] - 2026-05-10
 
@@ -98,5 +102,5 @@
 Name-claim release. Real load patterns (latency percentiles per-op,
 soak tests, memory pressure) land in `0.2.x` and beyond.
 
-[Unreleased]: https://github.com/jamesgober/dev-stress/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/jamesgober/dev-stress/compare/v0.9.3...HEAD
 [0.1.0]: https://github.com/jamesgober/dev-stress/releases/tag/v0.1.0
