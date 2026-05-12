@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `examples/workload.rs` — runnable demonstration of the `Workload` trait + `StressRun::execute` flow on multiple OS threads, printing `ops_per_sec`, `total_elapsed`, and `thread_time_cv` from the resulting `StressResult`.
+
+### Changed
+
+- CI: `actions/checkout` bumped from `v4` to `v5` (removes Node 20 deprecation warnings).
+
 ## [0.9.2] - 2026-05-10
 
 ### Added
