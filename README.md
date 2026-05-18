@@ -9,7 +9,7 @@
     <a href="https://crates.io/crates/dev-stress"><img alt="crates.io" src="https://img.shields.io/crates/v/dev-stress.svg"></a>
     <a href="https://crates.io/crates/dev-stress"><img alt="downloads" src="https://img.shields.io/crates/d/dev-stress.svg"></a>
     <a href="https://github.com/jamesgober/dev-stress/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/dev-stress/actions/workflows/ci.yml/badge.svg"></a>
-    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85%2B-blue.svg?style=flat-square" title="Rust Version">
+    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75%2B-blue.svg?style=flat-square" title="Rust Version">
     <a href="https://docs.rs/dev-stress"><img alt="docs.rs" src="https://docs.rs/dev-stress/badge.svg"></a>
 </p>
 
@@ -50,7 +50,7 @@ It does NOT do:
 
 ```toml
 [dependencies]
-dev-stress = "0.9.4"
+dev-stress = "0.9.5"
 ```
 
 ```rust
