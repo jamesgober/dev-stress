@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-05-18
+
+MSRV rollback to Rust 1.75. Backed off from 1.85 after `dev-fixtures`
+swapped `tempfile` → `mod-tempdir` 1.0 in its own 0.9.5 release,
+eliminating the `getrandom 0.4.2 → edition2024` chain that was the
+sole reason the dev-* collection sat at 1.85. No code changes here;
+this crate's own runtime dependencies have always been
+1.75-compatible.
+
+### Changed
+
+- `rust-version` lowered from `1.85` to `1.75` in `Cargo.toml`.
+- MSRV badge in README updated from `1.85+` to `1.75+`.
+
+### Notes
+
+- No code change. No API change. No new dependencies.
+- Library, examples, and tests all build clean on Rust 1.75 (verified).
+
+[0.9.5]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.5
+
 ## [0.9.4] - 2026-05-12
 
 Documentation and SEO pass. No code changes.

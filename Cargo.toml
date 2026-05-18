@@ -1,8 +1,8 @@
 [package]
 name = "dev-stress"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.75"
 readme = "README.md"
 license = "Apache-2.0"
 
