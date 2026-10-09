@@ -54,6 +54,8 @@ impl SoakRun {
     }
 
     /// Wall-clock interval between checkpoints.
+    ///
+    /// A zero interval means one checkpoint covering the whole run.
     pub fn checkpoint(mut self, d: Duration) -> Self {
         self.checkpoint_interval = d;
         self
@@ -76,24 +78,43 @@ impl SoakRun {
     /// Returns when `total_duration` has elapsed. Threads observe a
     /// shared `stop` flag and finish their current iteration before
     /// joining.
+    ///
+    /// Each worker publishes its iteration count after every iteration,
+    /// so checkpoint windows count every completed iteration, even for
+    /// slow workloads. Checkpoints are scheduled on a fixed grid from the
+    /// start of the run, but each window's duration and offset are the
+    /// measured times, so sleep overshoot (coarse on Windows) does not
+    /// inflate `ops_per_sec`.
+    ///
+    /// # Panics
+    ///
+    /// If `run_once` panics on a worker thread, the soak still runs to
+    /// the end of `total_duration`; then every worker is stopped and
+    /// joined, and the first worker panic is re-raised with its original
+    /// payload.
     pub fn execute<W>(&self, workload: &W) -> SoakResult
     where
         W: Workload + Clone + 'static,
     {
         let stop = Arc::new(AtomicBool::new(false));
-        let total_iters = Arc::new(AtomicUsize::new(0));
+        let counters: Arc<Vec<PaddedCounter>> = Arc::new(
+            (0..self.threads)
+                .map(|_| PaddedCounter(AtomicUsize::new(0)))
+                .collect(),
+        );
         let workload = Arc::new(workload.clone());
         let started = Instant::now();
 
         // Worker threads.
         let mut handles = Vec::with_capacity(self.threads);
-        for _ in 0..self.threads {
+        for idx in 0..self.threads {
             let w = workload.clone();
             let stop = stop.clone();
-            let total = total_iters.clone();
+            let counters = counters.clone();
             let track = self.track_latency;
             handles.push(std::thread::spawn(move || {
                 let start = Instant::now();
+                let counter = &counters[idx].0;
                 let mut tracker = track.map(LatencyTracker::new);
                 let mut local_count: usize = 0;
                 while !stop.load(Ordering::Relaxed) {
@@ -103,66 +124,64 @@ impl SoakRun {
                         w.run_once();
                     }
                     local_count = local_count.wrapping_add(1);
-                    // Periodic flush to the shared counter.
-                    if local_count % 1024 == 0 {
-                        total.fetch_add(1024, Ordering::Relaxed);
-                    }
+                    // Only this thread writes this cache line, so a
+                    // relaxed store is a plain write with no contention.
+                    counter.store(local_count, Ordering::Relaxed);
                 }
-                // Flush remainder.
-                let remainder = local_count % 1024;
-                if remainder != 0 {
-                    total.fetch_add(remainder, Ordering::Relaxed);
-                }
-                (start.elapsed(), tracker)
+                (start.elapsed(), tracker, local_count)
             }));
         }
 
-        // Driver thread: every checkpoint_interval, snapshot the
-        // running counter and any latency stats from a separate sample
-        // pool we maintain here. Latency in checkpoints is approximate:
-        // we only know the cumulative latency at finish.
+        // Driver: at each checkpoint, sum the per-thread counters.
+        // Latency is only aggregated at finish, not per checkpoint.
+        let interval = if self.checkpoint_interval.is_zero() {
+            self.total_duration
+        } else {
+            self.checkpoint_interval
+        };
+        let end_at = deadline_after(started, self.total_duration);
         let mut checkpoints: Vec<SoakCheckpoint> = Vec::new();
         let mut last_iters = 0usize;
         let mut last_at = started;
-        let end_at = started + self.total_duration;
         loop {
             let now = Instant::now();
             if now >= end_at {
                 break;
             }
-            let next = (last_at + self.checkpoint_interval).min(end_at);
-            let sleep_for = next.saturating_duration_since(now);
-            std::thread::sleep(sleep_for);
-            let now_iters = total_iters.load(Ordering::Relaxed);
-            let window_iters = now_iters - last_iters;
-            let window_dur = next - last_at;
+            // Next grid point strictly after `now`, capped at the end.
+            let next = next_grid_point(started, interval, now).map_or(end_at, |t| t.min(end_at));
+            std::thread::sleep(next.saturating_duration_since(now));
+            let at = Instant::now();
+            let now_iters = sum_counters(&counters);
+            let window_iters = now_iters.wrapping_sub(last_iters);
+            let window_dur = at.saturating_duration_since(last_at);
             let ops_per_sec = if window_dur.is_zero() {
                 0.0
             } else {
                 window_iters as f64 / window_dur.as_secs_f64()
             };
             checkpoints.push(SoakCheckpoint {
-                at_offset: next - started,
+                at_offset: at.saturating_duration_since(started),
                 window_iters,
                 window_duration: window_dur,
                 ops_per_sec,
             });
             last_iters = now_iters;
-            last_at = next;
+            last_at = at;
         }
         stop.store(true, Ordering::Relaxed);
 
         let mut thread_times = Vec::with_capacity(self.threads);
         let mut latency_samples: Vec<Duration> = Vec::new();
-        for h in handles {
-            let (elapsed, tracker) = h.join().unwrap();
+        let mut total_iters_final = 0usize;
+        for (elapsed, tracker, count) in crate::join_workers(handles) {
             thread_times.push(elapsed);
+            total_iters_final = total_iters_final.wrapping_add(count);
             if let Some(t) = tracker {
                 latency_samples.extend(t.into_samples());
             }
         }
         let total_elapsed = started.elapsed();
-        let total_iters_final = total_iters.load(Ordering::Relaxed);
 
         SoakResult {
             name: self.name.clone(),
@@ -180,16 +199,48 @@ impl SoakRun {
     }
 }
 
+/// A worker's iteration count, alone on its cache line so workers do
+/// not slow each other down through false sharing.
+#[repr(align(128))]
+struct PaddedCounter(AtomicUsize);
+
+fn sum_counters(counters: &[PaddedCounter]) -> usize {
+    counters.iter().fold(0usize, |acc, c| {
+        acc.wrapping_add(c.0.load(Ordering::Relaxed))
+    })
+}
+
+/// `start + d`, or a point far enough in the future to never be reached
+/// when `d` is too large for `Instant` (adding it directly would panic).
+fn deadline_after(start: Instant, d: Duration) -> Instant {
+    start
+        .checked_add(d)
+        .or_else(|| start.checked_add(Duration::from_secs(u64::from(u32::MAX))))
+        .unwrap_or(start)
+}
+
+/// The first point of the grid `start + k * interval` (k >= 1) that is
+/// strictly after `now`. `None` when it cannot be represented.
+fn next_grid_point(start: Instant, interval: Duration, now: Instant) -> Option<Instant> {
+    let interval_ns = interval.as_nanos();
+    if interval_ns == 0 {
+        return None;
+    }
+    let elapsed_ns = now.saturating_duration_since(start).as_nanos();
+    let k = u32::try_from(elapsed_ns / interval_ns + 1).ok()?;
+    start.checked_add(interval.checked_mul(k)?)
+}
+
 /// One sampling window inside a [`SoakResult`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SoakCheckpoint {
-    /// Offset from the run start to the end of this checkpoint.
+    /// Measured offset from the run start to the end of this checkpoint.
     pub at_offset: Duration,
-    /// Iterations executed during this window across all threads.
+    /// Iterations completed during this window across all threads.
     pub window_iters: usize,
-    /// Wall-clock duration of this window.
+    /// Measured wall-clock duration of this window.
     pub window_duration: Duration,
-    /// Throughput during this window.
+    /// Throughput during this window: `window_iters / window_duration`.
     pub ops_per_sec: f64,
 }
 
@@ -426,6 +477,114 @@ mod tests {
         let labels: Vec<&str> = c.evidence.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"checkpoint_count"));
         assert!(labels.contains(&"checkpoint_ops_cv"));
+    }
+
+    #[derive(Clone)]
+    struct Slow;
+    impl Workload for Slow {
+        fn run_once(&self) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn slow_workload_iterations_show_up_in_every_window() {
+        // At most ~50 ops per 100ms window. The shared counter used to be
+        // flushed only every 1024 iterations per thread, so every window
+        // reported 0 ops and the degradation check saw zero throughput.
+        let r = SoakRun::new("slow")
+            .duration(Duration::from_millis(400))
+            .checkpoint(Duration::from_millis(100))
+            .threads(1)
+            .execute(&Slow);
+        assert!(r.checkpoints.len() >= 3, "{:?}", r.checkpoints);
+        for c in &r.checkpoints {
+            assert!(c.window_iters > 0, "empty window: {c:?}");
+            assert!(c.ops_per_sec > 0.0);
+        }
+        let windowed: usize = r.checkpoints.iter().map(|c| c.window_iters).sum();
+        assert!(windowed <= r.iterations);
+        // The workers stop right after the last checkpoint, so at most
+        // one in-flight iteration per thread is outside the windows.
+        assert!(r.iterations - windowed <= r.threads);
+    }
+
+    #[test]
+    fn window_durations_are_measured_and_add_up() {
+        let r = SoakRun::new("steady")
+            .duration(Duration::from_millis(120))
+            .checkpoint(Duration::from_millis(30))
+            .threads(1)
+            .execute(&Noop);
+        let mut acc = Duration::ZERO;
+        for c in &r.checkpoints {
+            acc += c.window_duration;
+            assert_eq!(acc, c.at_offset);
+            let expect = c.window_iters as f64 / c.window_duration.as_secs_f64();
+            assert!((c.ops_per_sec - expect).abs() <= expect * 1e-12);
+        }
+        assert!(r.checkpoints.last().unwrap().at_offset >= Duration::from_millis(120));
+    }
+
+    #[test]
+    fn zero_checkpoint_interval_yields_one_window() {
+        // A zero interval used to spin, pushing zero-length checkpoints
+        // until the run ended.
+        let r = SoakRun::new("zero")
+            .duration(Duration::from_millis(50))
+            .checkpoint(Duration::ZERO)
+            .threads(1)
+            .execute(&Noop);
+        assert_eq!(r.checkpoints.len(), 1);
+        assert!(r.checkpoints[0].window_duration >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn zero_duration_returns_immediately() {
+        let r = SoakRun::new("none")
+            .duration(Duration::ZERO)
+            .checkpoint(Duration::from_millis(10))
+            .threads(2)
+            .execute(&Noop);
+        assert!(r.checkpoints.is_empty());
+        assert_eq!(r.thread_times.len(), 2);
+    }
+
+    #[test]
+    fn deadline_and_grid_math_do_not_overflow() {
+        let start = Instant::now();
+        // `start + Duration::MAX` panics; this must not.
+        let end = deadline_after(start, Duration::MAX);
+        assert!(end > start);
+        assert_eq!(next_grid_point(start, Duration::MAX, start), None);
+        assert_eq!(next_grid_point(start, Duration::ZERO, start), None);
+        let i = Duration::from_millis(10);
+        assert_eq!(next_grid_point(start, i, start), Some(start + i));
+        // Overshot past two grid points: skip to the next future one.
+        let late = start + Duration::from_millis(25);
+        assert_eq!(
+            next_grid_point(start, i, late),
+            Some(start + Duration::from_millis(30))
+        );
+    }
+
+    #[derive(Clone)]
+    struct Explodes;
+    impl Workload for Explodes {
+        fn run_once(&self) {
+            panic!("soak workload exploded");
+        }
+    }
+
+    #[test]
+    fn worker_panic_is_reraised_with_original_payload() {
+        let run = SoakRun::new("boom")
+            .duration(Duration::from_millis(20))
+            .checkpoint(Duration::from_millis(10))
+            .threads(2);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.execute(&Explodes)))
+            .expect_err("panic must propagate");
+        assert_eq!(err.downcast_ref::<&str>(), Some(&"soak workload exploded"));
     }
 
     #[test]

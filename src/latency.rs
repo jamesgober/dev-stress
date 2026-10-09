@@ -75,6 +75,12 @@ impl LatencyTracker {
 ///
 /// Computed from the concatenation of every per-thread tracker's samples.
 ///
+/// Percentiles use the nearest-rank method: the p-th percentile is the
+/// smallest sample such that at least p% of all samples are less than or
+/// equal to it (sorted index `ceil(p/100 * n) - 1`). Every reported value
+/// is a real sample. For 100 samples of 1..=100 ns, p50 is 50 ns, p95 is
+/// 95 ns and p99 is 99 ns.
+///
 /// # Example
 ///
 /// ```
@@ -117,17 +123,23 @@ impl LatencyStats {
                 samples_count: 0,
             };
         }
-        samples.sort();
-        let p50 = samples[n / 2];
-        let p95 = samples[((n as f64 * 0.95).floor() as usize).min(n - 1)];
-        let p99 = samples[((n as f64 * 0.99).floor() as usize).min(n - 1)];
+        samples.sort_unstable();
         Self {
-            p50,
-            p95,
-            p99,
+            p50: samples[nearest_rank_index(n, 50)],
+            p95: samples[nearest_rank_index(n, 95)],
+            p99: samples[nearest_rank_index(n, 99)],
             samples_count: n,
         }
     }
+}
+
+/// Zero-based index of the nearest-rank `pct` percentile in a sorted
+/// slice of `n > 0` samples: `ceil(pct * n / 100) - 1`, clamped to
+/// `[0, n - 1]`. Integer math, so no floating-point rounding at exact
+/// boundaries.
+fn nearest_rank_index(n: usize, pct: u64) -> usize {
+    let rank = (n as u128 * pct as u128).div_ceil(100);
+    (rank.max(1) - 1).min(n as u128 - 1) as usize
 }
 
 #[cfg(test)]
@@ -168,6 +180,77 @@ mod tests {
         let s = LatencyStats::from_samples(samples);
         assert!(s.p50 <= s.p95);
         assert!(s.p95 <= s.p99);
+    }
+
+    fn ns(values: &[u64]) -> Vec<Duration> {
+        values.iter().map(|&v| Duration::from_nanos(v)).collect()
+    }
+
+    #[test]
+    fn nearest_rank_percentiles_for_one_to_hundred() {
+        // The old floor(n * p) index reported p95 = 96 and p99 = 100
+        // (the maximum) here, one rank too high.
+        let samples: Vec<Duration> = (1..=100).map(Duration::from_nanos).collect();
+        let s = LatencyStats::from_samples(samples);
+        assert_eq!(s.p50, Duration::from_nanos(50));
+        assert_eq!(s.p95, Duration::from_nanos(95));
+        assert_eq!(s.p99, Duration::from_nanos(99));
+    }
+
+    #[test]
+    fn p99_is_not_the_max_once_there_are_enough_samples() {
+        // 200 samples: 198 fast, 2 slow outliers. 1% of 200 = 2, so the
+        // p99 must still be a fast sample.
+        let mut v = vec![10u64; 198];
+        v.extend([5_000, 9_000]);
+        let s = LatencyStats::from_samples(ns(&v));
+        assert_eq!(s.p99, Duration::from_nanos(10));
+        // With 3 slow samples out of 200, more than 1% are slow, so p99 is
+        // the smallest slow one.
+        let mut v = vec![10u64; 197];
+        v.extend([5_000, 6_000, 9_000]);
+        assert_eq!(
+            LatencyStats::from_samples(ns(&v)).p99,
+            Duration::from_nanos(5_000)
+        );
+    }
+
+    #[test]
+    fn two_samples_use_lower_median() {
+        // The old n / 2 index made the median of [10, 20] equal to 20.
+        let s = LatencyStats::from_samples(ns(&[20, 10]));
+        assert_eq!(s.p50, Duration::from_nanos(10));
+        assert_eq!(s.p95, Duration::from_nanos(20));
+        assert_eq!(s.p99, Duration::from_nanos(20));
+    }
+
+    #[test]
+    fn single_sample_is_every_percentile() {
+        let s = LatencyStats::from_samples(ns(&[7]));
+        assert_eq!(s.p50, Duration::from_nanos(7));
+        assert_eq!(s.p95, Duration::from_nanos(7));
+        assert_eq!(s.p99, Duration::from_nanos(7));
+        assert_eq!(s.samples_count, 1);
+    }
+
+    #[test]
+    fn unsorted_input_is_sorted_first() {
+        let s = LatencyStats::from_samples(ns(&[50, 10, 40, 20, 30]));
+        assert_eq!(s.p50, Duration::from_nanos(30));
+        assert_eq!(s.p99, Duration::from_nanos(50));
+    }
+
+    #[test]
+    fn nearest_rank_index_edges() {
+        assert_eq!(nearest_rank_index(1, 50), 0);
+        assert_eq!(nearest_rank_index(1, 99), 0);
+        assert_eq!(nearest_rank_index(20, 95), 18);
+        assert_eq!(nearest_rank_index(20, 99), 19);
+        assert_eq!(nearest_rank_index(1000, 99), 989);
+        assert_eq!(
+            nearest_rank_index(usize::MAX, 99),
+            (usize::MAX as u128 * 99).div_ceil(100) as usize - 1
+        );
     }
 
     #[test]

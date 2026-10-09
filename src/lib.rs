@@ -39,13 +39,25 @@
 //!
 //! ## Features
 //!
-//! - `system-stats` (opt-in): measure peak RSS and CPU time via
+//! - `system-stats` (opt-in): measure RSS and CPU time via
 //!   `sysinfo`. See the `system` module
 //!   (visible in rustdoc when the feature is enabled).
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
+
+/// Version of this crate as compiled, taken from its `Cargo.toml`.
+///
+/// Lets tools that bundle this crate, such as the `dev` CLI in
+/// `dev-tools`, report the version that is actually linked.
+///
+/// # Example
+///
+/// ```
+/// assert!(!dev_stress::VERSION.is_empty());
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -103,8 +115,11 @@ pub struct StressRun {
     iterations: usize,
     threads: usize,
     track_latency: Option<usize>, // None = off; Some(n) = sample 1/n iterations
-    /// Per-thread target ops/sec rate. None = unbounded (run as fast as possible).
-    target_ops_per_sec_per_thread: Option<f64>,
+    /// Total target ops/sec rate across all threads. None = unbounded
+    /// (run as fast as possible). Split across threads at execute time,
+    /// so the order of `threads` and `target_ops_per_sec` calls does not
+    /// matter.
+    target_ops_per_sec_total: Option<f64>,
 }
 
 impl StressRun {
@@ -115,7 +130,7 @@ impl StressRun {
             iterations: 1_000,
             threads: 1,
             track_latency: None,
-            target_ops_per_sec_per_thread: None,
+            target_ops_per_sec_total: None,
         }
     }
 
@@ -159,6 +174,11 @@ impl StressRun {
     /// high target rates (e.g. > 10k ops/sec/thread) the actual rate
     /// may be lower than the target due to sleep granularity.
     ///
+    /// The total is split evenly across threads when the run executes,
+    /// so it does not matter whether [`threads`](Self::threads) is
+    /// called before or after this method. A rate that is zero,
+    /// negative, NaN or infinite removes the cap.
+    ///
     /// # Example
     ///
     /// ```
@@ -172,12 +192,11 @@ impl StressRun {
     /// assert_eq!(run.threads_planned(), 4);
     /// ```
     pub fn target_ops_per_sec(mut self, total_rate: f64) -> Self {
-        if total_rate <= 0.0 {
-            self.target_ops_per_sec_per_thread = None;
+        self.target_ops_per_sec_total = if total_rate.is_finite() && total_rate > 0.0 {
+            Some(total_rate)
         } else {
-            let per_thread = total_rate / (self.threads.max(1) as f64);
-            self.target_ops_per_sec_per_thread = Some(per_thread);
-        }
+            None
+        };
         self
     }
 
@@ -191,12 +210,22 @@ impl StressRun {
         self.threads
     }
 
-    /// The configured per-thread target rate, if any.
+    /// The configured per-thread target rate, if any: the total from
+    /// [`target_ops_per_sec`](Self::target_ops_per_sec) divided by the
+    /// configured thread count.
     pub fn target_ops_per_sec_per_thread(&self) -> Option<f64> {
-        self.target_ops_per_sec_per_thread
+        self.target_ops_per_sec_total
+            .map(|total| total / self.threads.max(1) as f64)
     }
 
     /// Execute the run. Returns a result with timing statistics.
+    ///
+    /// # Panics
+    ///
+    /// If `run_once` panics on any worker thread, `execute` first waits
+    /// for every other worker to finish its share, then re-raises the
+    /// first worker panic with its original payload. No worker thread is
+    /// left running.
     pub fn execute<W>(&self, workload: &W) -> StressResult
     where
         W: Workload + Clone + 'static,
@@ -206,23 +235,29 @@ impl StressRun {
         let started = Instant::now();
         let mut handles = Vec::with_capacity(self.threads);
         let workload = Arc::new(workload.clone());
+        let target_rate = self.target_ops_per_sec_per_thread();
 
         for t in 0..self.threads {
             let count = per_thread + if t < leftover { 1 } else { 0 };
             let w = workload.clone();
             let track = self.track_latency;
-            let target_rate = self.target_ops_per_sec_per_thread;
             handles.push(std::thread::spawn(move || {
                 let start = Instant::now();
                 let mut tracker = track.map(LatencyTracker::new);
                 // Inverse of the per-thread rate, in seconds per op.
                 let interval_s = target_rate.map(|r| 1.0 / r);
                 for i in 0..count {
-                    if let (Some(interval), idx) = (interval_s, i) {
-                        let target = start + Duration::from_secs_f64(interval * idx as f64);
-                        let now = Instant::now();
-                        if target > now {
-                            std::thread::sleep(target - now);
+                    if let Some(interval) = interval_s {
+                        // Checked math: a tiny rate gives a target too far
+                        // out to represent; skip the wait rather than panic.
+                        let target = Duration::try_from_secs_f64(interval * i as f64)
+                            .ok()
+                            .and_then(|offset| start.checked_add(offset));
+                        if let Some(target) = target {
+                            let now = Instant::now();
+                            if target > now {
+                                std::thread::sleep(target - now);
+                            }
                         }
                     }
                     if let Some(t) = tracker.as_mut() {
@@ -237,8 +272,7 @@ impl StressRun {
 
         let mut thread_times = Vec::with_capacity(self.threads);
         let mut latency_samples: Vec<Duration> = Vec::new();
-        for h in handles {
-            let (elapsed, tracker) = h.join().unwrap();
+        for (elapsed, tracker) in join_workers(handles) {
             thread_times.push(elapsed);
             if let Some(t) = tracker {
                 latency_samples.extend(t.into_samples());
@@ -259,6 +293,28 @@ impl StressRun {
             },
         }
     }
+}
+
+/// Join every worker thread, then re-raise the first worker panic (with
+/// its original payload) if any worker panicked. Joining all of them
+/// first means no worker is left running when the panic propagates.
+pub(crate) fn join_workers<T>(handles: Vec<std::thread::JoinHandle<T>>) -> Vec<T> {
+    let mut results = Vec::with_capacity(handles.len());
+    let mut first_panic = None;
+    for h in handles {
+        match h.join() {
+            Ok(v) => results.push(v),
+            Err(payload) => {
+                if first_panic.is_none() {
+                    first_panic = Some(payload);
+                }
+            }
+        }
+    }
+    if let Some(payload) = first_panic {
+        std::panic::resume_unwind(payload);
+    }
+    results
 }
 
 /// Result of a stress run.
@@ -748,6 +804,75 @@ mod tests {
             .target_ops_per_sec(1000.0);
         // 1000 ops/sec / 4 threads = 250 ops/sec/thread.
         assert_eq!(run.target_ops_per_sec_per_thread(), Some(250.0));
+    }
+
+    #[test]
+    fn target_rate_does_not_depend_on_builder_order() {
+        // Calling threads() after target_ops_per_sec() used to keep the
+        // per-thread rate computed for 1 thread, so 4 threads ran at 4x
+        // the requested total.
+        let run = StressRun::new("x")
+            .iterations(100)
+            .target_ops_per_sec(1000.0)
+            .threads(4);
+        assert_eq!(run.target_ops_per_sec_per_thread(), Some(250.0));
+    }
+
+    #[test]
+    fn non_finite_target_rate_disables_cap_without_panicking() {
+        for rate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let run = StressRun::new("x")
+                .iterations(10)
+                .threads(2)
+                .target_ops_per_sec(rate);
+            assert_eq!(run.target_ops_per_sec_per_thread(), None);
+            // NaN used to reach Duration::from_secs_f64 and panic.
+            let r = run.execute(&Noop);
+            assert_eq!(r.iterations, 10);
+        }
+    }
+
+    #[test]
+    fn tiny_target_rate_does_not_panic() {
+        // 1e-300 ops/sec makes the second op's target time overflow
+        // Duration / Instant; that used to panic.
+        let r = StressRun::new("x")
+            .iterations(3)
+            .threads(1)
+            .target_ops_per_sec(1e-300)
+            .execute(&Noop);
+        assert_eq!(r.iterations, 3);
+    }
+
+    #[derive(Clone)]
+    struct PanicsOnce {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Workload for PanicsOnce {
+        fn run_once(&self) {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                panic!("workload exploded");
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn worker_panic_is_reraised_after_all_workers_finish() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let w = PanicsOnce {
+            calls: calls.clone(),
+        };
+        let run = StressRun::new("x").iterations(80).threads(4);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.execute(&w)))
+            .expect_err("worker panic must propagate");
+        // The original payload, not a generic unwrap() message.
+        assert_eq!(err.downcast_ref::<&str>(), Some(&"workload exploded"));
+        // Every other worker had already finished: no calls after return.
+        let at_return = calls.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), at_return);
     }
 
     #[test]

@@ -81,7 +81,9 @@ The returned `CheckResult` carries the `stress` tag and numeric
 
 ## Per-op latency percentiles
 
-Track p50/p95/p99 per operation by enabling latency tracking:
+Track p50/p95/p99 per operation by enabling latency tracking.
+Percentiles use the nearest-rank method, so each reported value is a
+real sample:
 
 ```rust
 use dev_stress::{StressRun, Workload};
@@ -178,7 +180,7 @@ let report = producer.produce(); // dev_report::Report
 
 ```toml
 [dependencies]
-dev-stress = { version = "0.9.4", features = ["system-stats"] }
+dev-stress = { version = "0.9.5", features = ["system-stats"] }
 ```
 
 ```rust,ignore
@@ -230,10 +232,8 @@ and will not change.
 
 ## Minimum supported Rust version
 
-`1.85` — pinned in `Cargo.toml` via `rust-version` and verified by
-the MSRV job in CI. (Bumped from 1.75 to align with the suite's
-shared MSRV after sibling crates picked up dependencies that require
-`edition2024`.)
+`1.75`, pinned in `Cargo.toml` via `rust-version` and verified by the
+MSRV job in CI.
 
 ## License
 

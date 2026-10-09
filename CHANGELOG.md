@@ -2,24 +2,58 @@
 
 ## [Unreleased]
 
-## [0.9.5] - 2026-05-18
+## [0.9.5] - 2026-10-09
 
-MSRV rollback to Rust 1.75. Backed off from 1.85 after `dev-fixtures`
-swapped `tempfile` → `mod-tempdir` 1.0 in its own 0.9.5 release,
-eliminating the `getrandom 0.4.2 → edition2024` chain that was the
-sole reason the dev-* collection sat at 1.85. No code changes here;
-this crate's own runtime dependencies have always been
-1.75-compatible.
+Percentile, soak and CPU-time fixes from a review pass, plus the MSRV
+rollback to Rust 1.75. The rollback follows `dev-fixtures` 0.9.5
+swapping `tempfile` for `mod-tempdir` 1.0, which removed the
+`getrandom 0.4.2 -> edition2024` chain that held the dev-* collection
+at 1.85.
+
+### Added
+
+- `VERSION` constant with the crate version as compiled, so tools that
+  bundle this crate can report what is actually linked.
+
+### Fixed
+
+- Latency percentiles were one rank too high. For samples 1..=100,
+  p95 was 96 and p99 was 100 (the maximum), and the median of
+  `[10, 20]` was 20. They now use the nearest-rank method with integer
+  math, so every reported value is a real sample. Expect slightly lower
+  p50/p95/p99 values than 0.9.4 reported for the same samples.
+- Soak checkpoints only saw a worker's iterations in batches of 1,024,
+  so slow workloads showed 0 ops per window and the degradation check
+  meant nothing. Each worker now publishes its count every iteration
+  on its own cache line. Window throughput uses the measured window
+  length instead of the planned one, a zero checkpoint interval no
+  longer spins, and a very large duration no longer panics on
+  `Instant` overflow.
+- `target_ops_per_sec(...)` followed by `threads(n)` kept a per-thread
+  rate computed for one thread, so the run went n times too fast. A
+  NaN or tiny rate panicked in the pacing math; a non-finite rate now
+  disables the cap.
+- A panicking workload left the other workers running and replaced the
+  panic message with a generic one. Every worker is now joined first
+  and the original panic is re-raised.
+- `SystemStats::cpu_time` reported sysinfo's `run_time()`, which is
+  wall-clock seconds since process start, not CPU time. It is now
+  accumulated from CPU usage between samples, counted from when the
+  sampler was created. Building a `SystemSampler` no longer loads every
+  process on the system, and the RSS delta can no longer overflow.
 
 ### Changed
 
-- `rust-version` lowered from `1.85` to `1.75` in `Cargo.toml`.
-- MSRV badge in README updated from `1.85+` to `1.75+`.
+- `rust-version` lowered from `1.85` to `1.75`. CI's MSRV job now
+  builds on 1.75 against an MSRV-compatible lockfile; it was still
+  pinned to 1.85.
 
-### Notes
+### Documentation
 
-- No code change. No API change. No new dependencies.
-- Library, examples, and tests all build clean on Rust 1.75 (verified).
+- The sampler reports RSS at sample time, not a peak; docs said "peak".
+- The percentile method is documented, and the `SystemSampler`
+  doctest now compiles and runs.
+- README: version snippet and MSRV section corrected.
 
 [0.9.5]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.5
 
