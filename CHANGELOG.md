@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-12
+
+### Fixed
+
+- Worker threads started work as soon as each was spawned, so a short
+  run often had no two threads running at once, and `total_elapsed`
+  (and with it ops/sec) included the time spent creating threads.
+  Workers now wait at a barrier until all of them exist, and timing
+  starts when they are released together.
+
+### Changed
+
+- Depends on `dev-report` 0.9.9 from crates.io instead of a sibling
+  checkout.
+
+[0.9.6]: https://github.com/jamesgober/dev-stress/releases/tag/v0.9.6
+
 ## [0.9.5] - 2026-10-09
 
 Percentile, soak and CPU-time fixes from a review pass, plus the MSRV
