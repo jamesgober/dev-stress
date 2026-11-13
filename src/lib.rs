@@ -220,6 +220,12 @@ impl StressRun {
 
     /// Execute the run. Returns a result with timing statistics.
     ///
+    /// Every worker thread is spawned first and waits at a barrier; all
+    /// of them start together once the last one is ready. Timing starts
+    /// at that point, so `total_elapsed` and each thread's time cover
+    /// the workload only, not thread creation, and the threads actually
+    /// run at the same time.
+    ///
     /// # Panics
     ///
     /// If `run_once` panics on any worker thread, `execute` first waits
@@ -232,16 +238,22 @@ impl StressRun {
     {
         let per_thread = self.iterations / self.threads;
         let leftover = self.iterations % self.threads;
-        let started = Instant::now();
         let mut handles = Vec::with_capacity(self.threads);
         let workload = Arc::new(workload.clone());
         let target_rate = self.target_ops_per_sec_per_thread();
+        // The workers and this thread meet here, so no worker starts
+        // before the last one has been spawned.
+        let barrier = Arc::new(std::sync::Barrier::new(self.threads + 1));
 
         for t in 0..self.threads {
             let count = per_thread + if t < leftover { 1 } else { 0 };
             let w = workload.clone();
             let track = self.track_latency;
+            let barrier = Arc::clone(&barrier);
             handles.push(std::thread::spawn(move || {
+                #[cfg(test)]
+                tests::WORKERS_READY.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                barrier.wait();
                 let start = Instant::now();
                 let mut tracker = track.map(LatencyTracker::new);
                 // Inverse of the per-thread rate, in seconds per op.
@@ -269,6 +281,8 @@ impl StressRun {
                 (start.elapsed(), tracker)
             }));
         }
+        barrier.wait();
+        let started = Instant::now();
 
         let mut thread_times = Vec::with_capacity(self.threads);
         let mut latency_samples: Vec<Duration> = Vec::new();
@@ -658,6 +672,46 @@ where
 mod tests {
     use super::*;
     use dev_report::Verdict;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Workers that have been spawned and reached the start barrier, across
+    /// every run in this test binary.
+    pub(super) static WORKERS_READY: AtomicUsize = AtomicUsize::new(0);
+
+    /// Records, on each call, how many workers had been spawned.
+    #[derive(Clone)]
+    struct SeesReadyWorkers {
+        min_seen: Arc<AtomicUsize>,
+    }
+
+    impl Workload for SeesReadyWorkers {
+        fn run_once(&self) {
+            let ready = WORKERS_READY.load(Ordering::SeqCst);
+            self.min_seen.fetch_min(ready, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn no_worker_starts_before_every_worker_is_spawned() {
+        let threads = 8;
+        for _ in 0..20 {
+            let before = WORKERS_READY.load(Ordering::SeqCst);
+            let w = SeesReadyWorkers {
+                min_seen: Arc::new(AtomicUsize::new(usize::MAX)),
+            };
+            let r = StressRun::new("barrier")
+                .iterations(threads * 50)
+                .threads(threads)
+                .execute(&w);
+            assert_eq!(r.thread_times.len(), threads);
+            let seen = w.min_seen.load(Ordering::SeqCst);
+            assert!(
+                seen - before >= threads,
+                "a worker ran while only {} of {threads} were spawned",
+                seen - before
+            );
+        }
+    }
 
     #[derive(Clone)]
     struct Noop;

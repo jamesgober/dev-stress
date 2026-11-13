@@ -1,6 +1,6 @@
 [package]
 name = "dev-stress"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"
@@ -35,7 +35,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-dev-report = { version = "0.9", path = "../dev-report" }
+dev-report = "0.9.9"
 sysinfo = { version = "0.30", optional = true, default-features = false }
 
 [dev-dependencies]
